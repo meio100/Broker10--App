@@ -1,0 +1,146 @@
+import pandas as pd
+import ta
+import numpy as np
+import streamlit as st
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
+import time
+
+# --- Título da aplicação ---
+st.title("Analisador de Sinais - Broker10")
+
+# --- Upload de dados ---
+file = st.file_uploader("Envie um arquivo CSV com dados OHLC", type=["csv"])
+
+if file:
+    df = pd.read_csv(file)
+    st.write("Pré-visualização dos dados:", df.head())
+
+    # --- RSI ---
+    rsi = ta.momentum.RSIIndicator(close=df['close'], window=14)
+    df['RSI'] = rsi.rsi()
+    df['Sinal_RSI'] = df['RSI'].apply(lambda x: 'compra' if x < 30 else 'venda' if x > 70 else 'neutro')
+
+    # --- Médias Móveis ---
+    df['SMA_14'] = df['close'].rolling(window=14).mean()
+    df['EMA_14'] = df['close'].ewm(span=14, adjust=False).mean()
+
+    # --- Indicadores Técnicos Avançados ---
+    macd = ta.trend.MACD(close=df['close'])
+    df['MACD'] = macd.macd()
+    df['MACD_Sinal'] = macd.macd_signal()
+
+    bb = ta.volatility.BollingerBands(close=df['close'], window=14, window_dev=2)
+    df['BB_Upper'] = bb.bollinger_hband()
+    df['BB_Lower'] = bb.bollinger_lband()
+
+    stoch = ta.momentum.StochasticOscillator(high=df['high'], low=df['low'], close=df['close'])
+    df['Stoch_%K'] = stoch.stoch()
+    df['Stoch_%D'] = stoch.stoch_signal()
+
+    adx = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'])
+    df['ADX'] = adx.adx()
+
+    sar = ta.trend.PSARIndicator(high=df['high'], low=df['low'], close=df['close'])
+    df['Parabolic_SAR'] = sar.psar()
+
+    ichimoku = ta.trend.IchimokuIndicator(high=df['high'], low=df['low'])
+    df['Ichimoku_Conversion'] = ichimoku.ichimoku_conversion_line()
+    df['Ichimoku_Base'] = ichimoku.ichimoku_base_line()
+
+    # --- Price Action: Padrões de Velas ---
+    def detectar_padroes(df):
+        sinais = []
+        for i in range(1, len(df)):
+            prev = df.iloc[i - 1]
+            curr = df.iloc[i]
+            s = 'neutro'
+
+            if prev['close'] < prev['open'] and curr['close'] > curr['open'] and curr['open'] < prev['close'] and curr['close'] > prev['open']:
+                s = 'engolfo_alta'
+            elif prev['close'] > prev['open'] and curr['close'] < curr['open'] and curr['open'] > prev['close'] and curr['close'] < prev['open']:
+                s = 'engolfo_baixa'
+            elif (curr['high'] - curr['low']) > 2*(curr['open'] - curr['close']) and (curr['close'] > curr['open']):
+                s = 'martelo'
+            elif (curr['high'] - curr['low']) > 2*(curr['close'] - curr['open']) and (curr['close'] < curr['open']):
+                s = 'enforcado'
+            elif abs(curr['close'] - curr['open']) < 0.1:
+                s = 'doji'
+
+            sinais.append(s)
+        sinais.insert(0, 'neutro')
+        return sinais
+
+    df['Sinal_Candle'] = detectar_padroes(df)
+
+    # --- Confirmação de entrada com múltiplos indicadores ---
+    def verificar_entrada_confirmada(df):
+        ultimo = df.iloc[-1]
+        sinais_compra = 0
+        sinais_venda = 0
+
+        if ultimo['Sinal_RSI'] == 'compra':
+            sinais_compra += 1
+        elif ultimo['Sinal_RSI'] == 'venda':
+            sinais_venda += 1
+
+        if ultimo['MACD'] > ultimo['MACD_Sinal']:
+            sinais_compra += 1
+        elif ultimo['MACD'] < ultimo['MACD_Sinal']:
+            sinais_venda += 1
+
+        if ultimo['close'] <= ultimo['BB_Lower']:
+            sinais_compra += 1
+        elif ultimo['close'] >= ultimo['BB_Upper']:
+            sinais_venda += 1
+
+        if ultimo['Sinal_Candle'] in ['engolfo_alta', 'martelo']:
+            sinais_compra += 1
+        elif ultimo['Sinal_Candle'] in ['engolfo_baixa', 'enforcado']:
+            sinais_venda += 1
+
+        if sinais_compra >= 3:
+            return 'compra'
+        elif sinais_venda >= 3:
+            return 'venda'
+        else:
+            return 'neutro'
+
+    sinal_confirmado = verificar_entrada_confirmada(df)
+    st.subheader("Sinal Confirmado:")
+    st.write(sinal_confirmado.upper())
+
+    # --- Botão para operar na Broker10 ---
+    if st.button("Executar operação na Broker10") and sinal_confirmado != 'neutro':
+        st.write("Iniciando operação...")
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        driver = webdriver.Chrome(options=chrome_options)
+
+        try:
+            driver.get("https://broker10.com")
+            time.sleep(5)
+
+            # Automatizar login - substitua SEU_LOGIN e SUA_SENHA pelos seus dados reais
+            driver.find_element(By.NAME, "email").send_keys("SEU_LOGIN")
+            driver.find_element(By.NAME, "password").send_keys("SUA_SENHA")
+            driver.find_element(By.NAME, "password").send_keys(Keys.ENTER)
+            time.sleep(5)
+
+            # Automatizar operação - ajustando IDs/nome dos botões conforme o site real
+            if sinal_confirmado == 'compra':
+                driver.find_element(By.ID, "botao_compra").click()
+            elif sinal_confirmado == 'venda':
+                driver.find_element(By.ID, "botao_venda").click()
+
+            st.success("Operação executada com sucesso!")
+        except Exception as e:
+            st.error(f"Erro ao executar operação: {e}")
+        finally:
+            driver.quit()
+
+    # --- Exibir dataframe final ---
+    with st.expander("Ver dados completos com indicadores"):
+        st.dataframe(df)
